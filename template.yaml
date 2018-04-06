@@ -1,0 +1,321 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS CloudFormation Template for WSO2 Products'
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: Cluster Configuration
+        Parameters:
+          - AWSAccessKeyId
+          - AWSAccessKeySecret
+          - KeyPairName
+      - Label:
+          default: Network Configuration
+        Parameters:
+          - CertificateName
+      - Label:
+          default: Database Configuration
+        Parameters:
+          - DBUsername
+          - DBPassword
+    ParameterLabels:
+      AWSAccessKeyId:
+        default: AWS Access Key ID
+      AWSAccessKeySecret:
+        default: AWS Access Secret Key
+      CertificateName:
+        default: Which certificate should be used at the Load Balancer
+      DBUsername:
+        default: Database Master username
+      DBPassword:
+        default: Database Master password
+Parameters:
+  WSO2Username:
+    Description: The WSO2 username.
+    Type: String
+    AllowedPattern: '[A-Za-z0-9\-]+'
+  WSO2Password:
+    Description: The WSO2 user password
+    Type: String
+    MinLength: 8
+    NoEcho: true
+    AllowedPattern: '[A-Za-z0-9\-]+'
+  AMI:
+    Type: String
+    Default: READ_FROM_REGIONMAP
+    Description: AMI of the region. Keep READ_FROM_REGIONMAP to map Ubuntu AMI from the RegionMap in the script.
+  AWSAccessKeyId:
+    Description: >-
+      The AWS Access Key ID used for internal AWS CLI request calls
+    Type: String
+  AWSAccessKeySecret:
+    Description: >-
+      The AWS Access Key Secret for internal AWS CLI request calls
+    Type: String
+  KeyPairName:
+    Description: >-
+      The key pair to establish a SSH connection to the web servers. This should
+      be already created.
+    Type: 'AWS::EC2::KeyPair::KeyName'
+  CertificateName:
+    Description: A previously uploaded certificate to use at the Load Balancer Listeners.
+    Type: String
+    MinLength: 1
+  DBUsername:
+    Description: The username to be used in the WSO2 DB.
+    Type: String
+    Default: root
+    MinLength: 4
+    AllowedPattern: '[A-Za-z0-9\-]+'
+  DBPassword:
+    Description: The password to be used in the WSO2 DB.
+    Type: String
+    Default: wso2carbon
+    MinLength: 8
+    NoEcho: true
+Resources:
+#VPC Creation
+  WSO2VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+#Public Subnets
+  WSO2PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WSO2VPC
+      CidrBlock: 10.0.254.0/24
+      AvailabilityZone: !Select
+        - '0'
+        - !GetAZs ''
+  WSO2PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WSO2VPC
+      CidrBlock: 10.0.252.0/24
+      AvailabilityZone: !Select
+        - '1'
+        - !GetAZs ''
+  WSO2PublicInternetGateway:
+    Type: AWS::EC2::InternetGateway
+  WSO2PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WSO2VPC
+  WSO2PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref WSO2PublicRouteTable
+      SubnetId: !Ref WSO2PublicSubnet1
+  WSO2PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref WSO2PublicRouteTable
+      SubnetId: !Ref WSO2PublicSubnet2
+  WSO2PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref WSO2PublicRouteTable
+      GatewayId: !Ref WSO2PublicInternetGateway
+      DestinationCidrBlock: 0.0.0.0/0
+    DependsOn: WSO2VPCInternetGatewayAttachment
+  WSO2VPCInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref WSO2PublicInternetGateway
+      VpcId: !Ref WSO2VPC
+#Private Subnets
+  WSO2PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WSO2VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select
+        - '0'
+        - !GetAZs ''
+  WSO2PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WSO2VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select
+        - '1'
+        - !GetAZs ''
+  WSO2PrivateSubnetRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WSO2VPC
+  WSO2PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref WSO2NATGateway
+      RouteTableId: !Ref WSO2PrivateSubnetRouteTable
+  WSO2PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref WSO2PrivateSubnetRouteTable
+      SubnetId: !Ref WSO2PrivateSubnet1
+  WSO2PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref WSO2PrivateSubnetRouteTable
+      SubnetId: !Ref WSO2PrivateSubnet2
+  WSO2NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt
+        - WSO2EIP
+        - AllocationId
+      SubnetId: !Ref WSO2PublicSubnet1
+  WSO2EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+#RDS Instance
+  WSO2DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: 5
+      AutoMinorVersionUpgrade: false
+      BackupRetentionPeriod: 0
+      DBInstanceClass: db.t2.medium
+      DBInstanceIdentifier: WSO2DBInstance
+      DBSubnetGroupName: !Ref WSO2DBSubnetGroup
+      Engine: MySQL
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      VPCSecurityGroups:
+        - !Ref WSO2DBSecurityGroup
+    DeletionPolicy: "Snapshot"
+  WSO2DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: RDS subnet group
+      SubnetIds:
+        - !Ref WSO2PrivateSubnet1
+        - !Ref WSO2PrivateSubnet2
+#Load Balancer
+  WSO2ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: WSO2 Instance
+      Scheme: internet-facing
+      Subnets:
+        - !Ref WSO2PublicSubnet1
+        - !Ref WSO2PublicSubnet2
+      SecurityGroups:
+        - !Ref WSO2LBSecurityGroup
+  WSO2ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTPS
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 4
+      HealthCheckPath: /carbon/admin/login.jsp
+      HealthCheckPort: 9443
+      Matcher:
+        HttpCode: 200
+      Name: carbon-9443
+      Port: 9443
+      Protocol: HTTPS
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: '20'
+      - Key: stickiness.enabled
+        Value: 'true'
+      Targets:
+      - Id: !Ref WSO2Instance1
+        Port: 9443
+      Targets:
+      - Id: !Ref WSO2Instance2
+        Port: 9443
+      UnhealthyThresholdCount: 3
+      VpcId:
+        Ref: WSO2VPC
+  WSO2ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      Certificates:
+        - CertificateArn: !Ref CertificateName
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WSO2ALBTargetGroup
+      LoadBalancerArn: !Ref WSO2ApplicationLoadBalancer
+      Port: 9443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS-1-1-2017-01
+#Security Groups
+#WSO2 Instance Security Group
+  WSO2InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for WSO2 EC2 compute instances
+      VpcId: !Ref WSO2VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 8140
+        ToPort: 8140
+        CidrIp: !GetAtt WSO2VPC.CidrBlock
+      - IpProtocol: tcp
+        FromPort: 9763
+        ToPort: 9763
+        SourceSecurityGroupId: !Ref WSO2LBSecurityGroup
+      - IpProtocol: tcp
+        FromPort: 9443
+        ToPort: 9443
+        SourceSecurityGroupId: !Ref WSO2LBSecurityGroup
+#Load Balancer Securtiy Group
+  WSO2LBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref WSO2VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '9763'
+          ToPort: '9763'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '9443'
+          ToPort: '9443'
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: '9763'
+          ToPort: '9763'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '9443'
+          ToPort: '9443'
+          CidrIp: 0.0.0.0/0
+#Database Security Group
+  WSO2DBSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Security group for RDS
+        VpcId: !Ref WSO2VPC
+        SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref WSO2InstanceSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref WSO2InstanceSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 1433
+          ToPort: 1433
+          SourceSecurityGroupId: !Ref WSO2InstanceSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 1521
+          ToPort: 1521
+          SourceSecurityGroupId: !Ref WSO2InstanceSecurityGroup
